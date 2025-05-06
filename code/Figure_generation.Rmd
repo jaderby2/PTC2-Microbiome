@@ -1,0 +1,1623 @@
+---
+title: "Figure_generation"
+author: "Jade Derby"
+date: "2025-04-15"
+output: html_document
+---
+
+
+## Figure and Data generation code
+
+
+# Load packages
+
+```{r}
+library(phyloseq)
+library(dplyr)
+library(microViz)
+library(ggpubr)
+```
+
+
+# Load phyloseq object
+
+```{r}
+ps <- readRDS("#/ps.rds")
+```
+
+
+# Generating ASV abundance and Taxonomy tables
+
+```{r}
+# Taxonomy table
+all_taxa <- tax_table(ps)
+
+# Hemolymph ASV abundance
+fixed_hemo <- ps %>%
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed")
+fixed_hemo_abundances <- otu_table(fixed_hemo)
+
+# Water ASV abundance
+water <- ps %>%
+  ps_filter(Type == "Water", PTC2 == "Fixed")
+water_abundances <- otu_table(water)
+
+# 15RS ASV abundance
+RS15 <- ps %>%
+  ps_filter(Type == "Hemolymph", Line == "15RS")
+RS15_abundances <- otu_table(RS15)
+```
+
+
+# Determing number of unique taxa identified at genus and phylum ranks
+
+```{r}
+# Count unique genera
+n_genus <- ps %>%
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed") %>%
+  tax_table() %>%
+  as.data.frame() %>%
+  .$Genus %>%
+  na.omit() %>%
+  unique() %>%
+  length()
+
+# Count unique phyla
+n_phylum <- ps %>%
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed") %>%
+  tax_table() %>%
+  as.data.frame() %>%
+  .$Phylum %>%
+  na.omit() %>%
+  unique() %>%
+  length()
+
+# View results
+n_genus
+n_phylum
+```
+
+
+
+# Alpha diversity plots
+
+```{r}
+# Define pairwise comparisons
+comparisons <- list(
+  c("SS_Water", "SS_Hemolymph"),
+  c("RR_Water", "RR_Hemolymph"),
+  c("SS_Water", "RR_Water"),
+  c("SS_Hemolymph", "RR_Hemolymph")
+)
+
+dat.diversity <- ps %>%
+  ps_filter(PTC2 == "Fixed") %>%
+    ps_calc_diversity(rank = "unique", index = "shannon", exp = TRUE) %>%
+    ps_calc_diversity(rank = "unique", index = "gini_simpson", exp = FALSE) %>%
+    ps_mutate(gini_simpson_unique_eff = 1 / (1 - gini_simpson_unique)) %>%
+    ps_mutate(genotypextype = paste(Genotype, Type, sep = "_"),
+              genotypextype = factor(genotypextype, levels = c("SS_Water", "SS_Hemolymph", "RR_Water", "RR_Hemolymph"))) %>%
+    samdat_tbl()
+
+primary.colpal <- c(
+  "SS_Water" = "steelblue2", 
+  "SS_Hemolymph" = "dodgerblue4", 
+  "RR_Water" = "firebrick1",  
+  "RR_Hemolymph" = "firebrick"  
+)
+
+names(primary.colpal) <- dat.diversity %>% pull(genotypextype) %>% levels()
+
+shannon.p <- dat.diversity %>%
+  ggboxplot(x = "genotypextype", y = "exp_shannon_unique",
+            ylab = "Effective Species (Shannon entropy)",
+            fill = "genotypextype",
+            palette = primary.colpal,
+            ggtheme = theme_pubr() +
+                      theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1))) +
+  geom_jitter(width = 0.2, size = 1, alpha = 0.7) +
+  stat_compare_means(method = "wilcox.test", 
+                     comparisons = comparisons, 
+                     paired = FALSE, 
+                     label = "p.format")
+    
+# Create the boxplot for Gini-Simpson
+
+simpson.p <- dat.diversity %>%
+  ggboxplot(x = "genotypextype", y = "gini_simpson_unique_eff",
+            ylab = "Effective Species (Gini-Simpson)",
+            fill = "genotypextype",
+            palette = primary.colpal) +
+  geom_jitter(width = 0.2, size = 1, alpha = 0.7) +
+  theme_pubr() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1)) +
+  stat_compare_means(method = "wilcox.test", 
+                     comparisons = comparisons, 
+                     paired = FALSE, 
+                     label = "p.format")
+
+# Adjust theme settings for better spacing and readability
+shannon.p <- shannon.p + theme(
+  axis.text = element_text(size = 10), # Reduce axis text size
+  axis.text.x = element_text(size = 9), # Reduce treatment label size
+  plot.margin = margin(10, 10, 10, 10) # Adjust margins for spacing
+)
+
+simpson.p <- simpson.p + theme(
+  axis.text = element_text(size = 10),
+  axis.text.x = element_text(size = 9),
+  plot.margin = margin(10, 10, 10, 10)
+)
+
+# Arrange the plots with labels
+Alpha_diversity <- ggarrange(
+  shannon.p, simpson.p,
+  labels = c("A", "B"), 
+  heights = c(1.2, 1.2),
+  common.legend = TRUE,
+  font.label = list(size = 14, face = "bold") 
+) + 
+  theme(plot.background = element_rect(fill="white", color = NA))
+
+Alpha_diversity
+```
+
+
+# Shared presence distribution plot at genus level
+
+```{r}
+library(microbiome)
+
+fixed_hemo_rel <- ps %>%
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed") %>%
+  tax_transform("clr")
+
+fixed_hemo_genus <- aggregate_taxa(fixed_hemo_rel, "Genus")
+fixed_hemo_genus <- otu_table(fixed_hemo_genus)
+
+# Convert to presence/absence
+presence_absence <- fixed_hemo_genus > 0
+
+# Count the number of taxa present per sample (column-wise sum)
+taxa_per_sample <- colSums(presence_absence)
+
+# Prepare data for plotting
+plot_data <- data.frame(
+  Number_of_Individuals = seq_along(taxa_per_sample), 
+  Number_of_Taxa = taxa_per_sample
+)
+
+# Count the number of samples each taxon is present in (row-wise sum)
+samples_per_taxa <- rowSums(presence_absence)
+
+# Prepare the data for plotting
+shared_taxa_data <- data.frame(
+  Number_of_Samples = samples_per_taxa, 
+  Taxon = rownames(fixed_hemo_genus)
+)
+
+# Summarize the count of taxa shared across different numbers of samples
+taxa_distribution <- as.data.frame(table(shared_taxa_data$Number_of_Samples))
+colnames(taxa_distribution) <- c("Number_of_Individuals", "Number_of_Taxa")
+
+# Ensure 'Number_of_Individuals' is numeric
+taxa_distribution$Number_of_Individuals <- as.numeric(as.character(taxa_distribution$Number_of_Individuals))
+
+
+Presence_distribution_genus <- ggplot(taxa_distribution, aes(x = Number_of_Individuals, y = Number_of_Taxa)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  scale_x_continuous(
+    breaks = seq(0, max(taxa_distribution$Number_of_Individuals), by = 5),
+    expand = c(0, 0) # Remove extra space around the axis
+  ) +
+  labs(
+    x = "Number of Individuals",
+    y = "Number of Genera Shared") +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Rotate x-axis labels for better readability
+    panel.grid.major.x = element_blank() # Remove vertical grid lines for cleaner aesthetics
+  )
+Presence_distribution_genus
+```
+
+
+# Family level 
+
+```{r}
+fixed_hemo_family <- aggregate_taxa(fixed_hemo_rel, "Family")
+fixed_hemo_family <- otu_table(fixed_hemo_family)
+
+# Convert to presence/absence (1 if present, 0 if absent)
+presence_absence_Fam <- fixed_hemo_family > 0
+
+# Count the number of taxa present per sample (column-wise sum)
+taxa_per_sample_Fam <- colSums(presence_absence_Fam)
+
+# Prepare data for plotting
+plot_data_Fam <- data.frame(
+  Number_of_Individuals_Fam = seq_along(taxa_per_sample_Fam), 
+  Number_of_Taxa_Fam = taxa_per_sample_Fam
+)
+
+# Count the number of samples each taxon is present in (row-wise sum)
+samples_per_taxa_Fam <- rowSums(presence_absence_Fam)
+
+# Prepare the data for plotting
+shared_taxa_data_Fam <- data.frame(
+  Number_of_Samples_Fam = samples_per_taxa_Fam, 
+  Taxon = rownames(fixed_hemo_family)
+)
+
+# Summarize the count of taxa shared across different numbers of samples
+taxa_distribution_Fam <- as.data.frame(table(shared_taxa_data_Fam$Number_of_Samples_Fam))
+colnames(taxa_distribution_Fam) <- c("Number_of_Individuals_Fam", "Number_of_Taxa_Fam")
+
+# Ensure 'Number_of_Individuals' is numeric
+taxa_distribution_Fam$Number_of_Individuals_Fam <- as.numeric(as.character(taxa_distribution_Fam$Number_of_Individuals_Fam))
+
+
+Presence_distribution_family <- ggplot(taxa_distribution_Fam, aes(x = Number_of_Individuals_Fam, y = Number_of_Taxa_Fam)) +
+  geom_bar(stat = "identity", fill = "skyblue", color = "black") +
+  scale_x_continuous(
+    breaks = seq(0, max(taxa_distribution_Fam$Number_of_Individuals_Fam), by = 5),
+    expand = c(0, 0) # Remove extra space around the axis
+  ) +
+  labs(
+    x = "Number of Individuals",
+    y = "Number of Families Shared"
+  ) +
+  theme_minimal() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1), # Rotate x-axis labels for better readability
+    panel.grid.major.x = element_blank() # Remove vertical grid lines for cleaner aesthetics
+  )
+Presence_distribution_genus
+```
+
+
+# Combining plots
+
+```{r}
+Presence_distributions <- ggarrange(
+  Presence_distribution_genus, Presence_distribution_family,
+  ncol = 1, nrow = 2, 
+  labels = c("A", "B"),
+  font.label = list(size = 14, face = "bold") 
+)
+Presence_distributions
+```
+
+
+# Creating data frame with presence data (Table S2)
+
+```{r}
+# Genus level 
+
+# Calculate the number of individuals for each taxon
+taxa_shared_counts <- rowSums(otu_table(fixed_hemo_genus) > 0)
+
+# Create a data frame with taxa and their shared counts
+taxa_shared_df <- data.frame(
+  Taxa = rownames(otu_table(fixed_hemo_genus)),
+  Shared_Individuals = taxa_shared_counts
+)
+
+# Filter for highly shared taxa (e.g., present in at least 90% of samples)
+threshold <- 0.9 * ncol(otu_table(fixed_hemo_genus)) # 90% of total samples
+highly_shared_taxa <- taxa_shared_df[taxa_shared_df$Shared_Individuals >= threshold, ]
+
+View(taxa_shared_df)
+```
+
+```{r}
+# Family level 
+
+# Calculate the number of individuals for each taxon
+taxa_shared_counts_Fam <- rowSums(otu_table(fixed_hemo_family) > 0)
+
+# Create a data frame with taxa and their shared counts
+taxa_shared_df_Fam <- data.frame(
+  Taxa = rownames(otu_table(fixed_hemo_family)),
+  Shared_Individuals_Fam = taxa_shared_counts_Fam
+)
+
+# Filter for highly shared taxa (e.g., present in at least 90% of samples)
+threshold_Fam <- 0.9 * ncol(otu_table(fixed_hemo_family)) # 90% of total samples
+highly_shared_taxa_Fam <- taxa_shared_df_Fam[taxa_shared_df_Fam$Shared_Individuals_Fam >= threshold_Fam, ]
+```
+
+
+
+## Composition Bar Plots
+
+
+```{r}
+# Fixed-genotype inbred hemolymph 
+
+fixed_hemo <- ps %>%
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed") # To observe other samples (e.g. water, RS15) modify ps_filter 
+
+# For clarity, shortening the sample names 
+
+sample_data(fixed_hemo)$temp_sample_name <- c(
+  "RR3H1", "RR3H2", "RR3H3", "RR3H4", "RS1H1", "RS1H2", "RS1H3", "RS1H4",
+  "RR1H1", "RR1H2", "RR1H3", "RR1H4", "RR6H1", "RR6H2", "RR6H3", "RR6H4",
+  "RS11H1", "RS11H2", "RS11H3", "RS11H4", "RS7H1", "RS7H2", "RS7H3", "RS7H4",
+  "6RRH1", "6RRH2", "6RRH3", "6RRH4", "RS3H1", "RS3H2", "RS3H3", "RS3H4",
+  "SS3H1", "SS3H2", "SS3H3", "SS3H4", "16SSH1", "16SSH2", "16SSH3", "16SSH4",
+  "SS5H1", "SS5H2", "SS5H3", "SS5H4", "SS4H1", "SS4H2", "SS4H3", "SS4H4",
+  "SS1H1", "SS1H2", "SS1H3", "SS1H4", "SS12H1", "SS12H2", "SS12H3", "SS12H4",
+  "20SSH1", "20SSH2", "20SSH3", "20SSH4", "2SSH1", "2SSH2", "2SSH3", "2SSH4",
+  "SS11H1", "SS11H2", "SS11H3", "SS11H4", "11SSH1", "11SSH2", "11SSH3", "11SSH4"
+)
+sample_names(fixed_hemo) <- sample_data(fixed_hemo)$temp_sample_name
+
+# Manually ordering samples in composition bar plot based on replicate number and grouped by inbred Line. MicroViz by default orders samples by similarity according to a specified distance measure (default 'bray'-curtis)
+
+desired_order <- c(
+  "RR3H1", "RR3H2", "RR3H3", "RR3H4", "RS1H1", "RS1H2", "RS1H3", "RS1H4",
+  "RR1H1", "RR1H2", "RR1H3", "RR1H4", "RR6H1", "RR6H2", "RR6H3", "RR6H4",
+  "RS11H1", "RS11H2", "RS11H3", "RS11H4", "RS7H1", "RS7H2", "RS7H3", "RS7H4",
+  "6RRH1", "6RRH2", "6RRH3", "6RRH4", "RS3H1", "RS3H2", "RS3H3", "RS3H4",
+  "SS3H1", "SS3H2", "SS3H3", "SS3H4", "16SSH1", "16SSH2", "16SSH3", "16SSH4",
+  "SS5H1", "SS5H2", "SS5H3", "SS5H4", "SS4H1", "SS4H2", "SS4H3", "SS4H4",
+  "SS1H1", "SS1H2", "SS1H3", "SS1H4", "SS12H1", "SS12H2", "SS12H3", "SS12H4",
+  "20SSH1", "20SSH2", "20SSH3", "20SSH4", "2SSH1", "2SSH2", "2SSH3", "2SSH4",
+  "SS11H1", "SS11H2", "SS11H3", "SS11H4", "11SSH1", "11SSH2", "11SSH3", "11SSH4"
+)
+```
+
+```{r}
+# Generates bar plot of fixed inbred hemolymph microbiome composition at the Genus level
+
+Fixed_hemo_genus_composition <- fixed_hemo %>%
+  comp_barplot(
+    tax_level = "Phylum", # To observe at other taxonomic levels (e.g. phylum, family) modify tax_level
+    label = "temp_sample_name", 
+    n_taxa = 20,
+    other_name = "Other Phyla",
+    merge_other = TRUE, 
+    bar_width = .7,
+    sample_order = desired_order) +
+  facet_wrap(vars(Genotype), scales = "free") +
+  coord_flip() +
+   theme(
+    legend.text = element_text(size = 6),        
+    legend.title = element_text(size = 7),      
+    axis.text.y = element_text(size = 8),   
+    axis.text.x = element_text(size = 8), 
+    strip.text = element_text(size = 10), 
+    legend.key.size = unit(0.4, "cm"),        
+    plot.title = element_text(size = 10, face = "bold")
+  ) +
+  guides(fill = guide_legend(ncol = 1))
+Fixed_hemo_genus_composition
+```
+
+```{r}
+Water <- ps %>%
+  ps_filter(Type == "Water")
+
+Water_genus_composition <- Water %>%
+  comp_barplot(
+    tax_level = "Genus", # To observe at other taxonomic levels (e.g. phylum, family) modify tax_level
+    label = "temp_sample_name", 
+    n_taxa = 20,
+    other_name = "Other Genera",
+    merge_other = TRUE, 
+    bar_width = .7) +
+  facet_wrap(vars(Genotype), scales = "free") +
+  coord_flip() +
+   theme(
+    legend.text = element_text(size = 6),        
+    legend.title = element_text(size = 7),      
+    axis.text.y = element_text(size = 8),   
+    axis.text.x = element_text(size = 8), 
+    strip.text = element_text(size = 10), 
+    legend.key.size = unit(0.4, "cm"),        
+    plot.title = element_text(size = 10, face = "bold")
+  ) +
+  guides(fill = guide_legend(ncol = 1))
+Water_genus_composition
+```
+
+```{r}
+RS15 <- ps %>%
+  ps_filter(PTC2 == "Segregating")
+
+RS15_genus_composition <- RS15 %>%
+  comp_barplot(
+    tax_level = "Genus", # To observe at other taxonomic levels (e.g. phylum, family) modify tax_level
+    label = "temp_sample_name", 
+    n_taxa = 20,
+    other_name = "Other genera",
+    merge_other = TRUE, 
+    bar_width = .7) +
+  facet_wrap(vars(Genotype), scales = "free") +
+  coord_flip() +
+   theme(
+    legend.text = element_text(size = 6),        
+    legend.title = element_text(size = 7),      
+    axis.text.y = element_text(size = 8),   
+    axis.text.x = element_text(size = 8), 
+    strip.text = element_text(size = 10), 
+    legend.key.size = unit(0.4, "cm"),        
+    plot.title = element_text(size = 10, face = "bold")
+  ) +
+  guides(fill = guide_legend(ncol = 1))
+RS15_genus_composition
+```
+
+
+## Pricipal Components Analysis plots
+
+```{r}
+# Fixed-genotype hemolymph PCA 
+
+pca_colors <- c("firebrick1", "steelblue2")
+
+Fixed_hemo_genus_pca <- ps %>% 
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(axes = c(1, 2), color = "Genotype", fill = "Genotype", auto_caption = 11) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+  scale_color_manual(values = pca_colors) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Genotype) 
+ )
+Fixed_hemo_genus_pca
+```
+
+```{r}
+# Water PCA
+
+Water_genus_pca <- ps %>% 
+  ps_filter(Type == "Water", PTC2 == "Fixed") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(axes = c(1, 2), color = "Genotype", fill = "Genotype", auto_caption = 11) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+  scale_color_manual(values = pca_colors) +
+ ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Genotype)
+ )
+Water_genus_pca
+```
+
+```{r}
+# 15RS PCA 
+
+RS15_colors <- c("firebrick1", "green3", "steelblue2")
+
+RS15_genus_pca <- ps %>% 
+  ps_filter(Type == "Hemolymph", Line == "15RS") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(color = "Genotype", size = 2, auto_caption = 11) +
+  scale_color_manual(values = RS15_colors) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+ggplot2::stat_ellipse(
+  ggplot2::aes(colour = Genotype))
+RS15_genus_pca
+```
+
+```{r}
+# Sample Type (Hemolymph vs Water) PCA
+
+Type_pca <- ps %>% 
+  ps_filter(PTC2 == "Fixed") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(
+  axes = c(1, 2),
+  color = "Genotype",
+  shape = "Type",
+  auto_caption = 11
+) +
+  scale_color_manual(values = pca_colors) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+ggplot2::stat_ellipse(
+  ggplot2::aes(group = Type),
+  show.legend = FALSE
+) +
+ggplot2::guides(
+  color = ggplot2::guide_legend(title = "Genotype"),
+  shape = ggplot2::guide_legend(title = "Type")
+)
+Type_pca
+```
+
+# Creating combined PCA plot
+
+```{r}
+library(patchwork)
+
+PCAs <- (Type_pca + Fixed_hemo_genus_pca) / 
+        (RS15_genus_pca + Water_genus_pca) + 
+  plot_layout(heights = c(1, 1), widths = c(1, 1)) + 
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.margin = margin(10, 10, 10, 10))  # Adjust margin around each plot
+
+PCAs
+```
+
+
+```{r}
+# RR and SS fixed-genotype hemolymph separate PCAs
+
+RR_fixed_hemo <- ps %>% 
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed", Genotype == "RR") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(color = "Line", size = 2, auto_caption = 12) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+  scale_color_manual(values = my_colors) 
+RR_fixed_hemo
+
+SS_fixed_hemo <- ps %>% 
+  ps_filter(Type == "Hemolymph", PTC2 == "Fixed", Genotype == "SS") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(color = "Line", size = 2, auto_caption = 12) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+  scale_color_manual(values = my_colors)
+SS_fixed_hemo
+```
+
+
+# Creating combined PCA plot
+
+```{r}
+Separate_RR_SS_pca <- (RR_fixed_hemo / SS_fixed_hemo) + 
+  plot_annotation(tag_levels = 'A')
+Separate_RR_SS_pca
+```
+
+```{r}
+# All hemolymph pca and only RR hemolymph PCAs
+
+All_hemolymph_pca <- ps %>% 
+  ps_filter(Type == "Hemolymph") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(axes = c(1, 2), color = "Genotype", fill = "Genotype", shape = "PTC2", auto_caption = 12) +
+    ggplot2::scale_shape_manual(values = c("Fixed" = 20, "Segregating" = 1)) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+ggplot2::stat_ellipse(
+  ggplot2::aes(group = PTC2),
+  show.legend = FALSE
+) +
+ggplot2::guides(
+  color = ggplot2::guide_legend(title = "Genotype"),
+  shape = ggplot2::guide_legend(title = "PTC2"))
+All_hemolymph_pca
+
+All_RR_pca <- ps %>% 
+  ps_filter(Type == "Hemolymph", Genotype == "RR") %>%
+  tax_transform("clr", rank = "Genus") %>%
+  ord_calc() %>%
+  ord_plot(axes = c(1, 2), color = "PTC2", fill = "PTC2", shape = "PTC2", auto_caption = 12) +
+    ggplot2::scale_shape_manual(values = c("Fixed" = 20, "Segregating" = 1)) +
+  theme(
+    legend.text = element_text(size = 13),
+    legend.title = element_text(size = 15)) +
+ggplot2::stat_ellipse(
+  ggplot2::aes(group = PTC2),
+  show.legend = FALSE
+) +
+ggplot2::guides(shape = ggplot2::guide_legend(title = "PTC2")) +
+ggplot2::scale_color_manual(values = c("Fixed" = "red", "Segregating" = "red"))
+All_RR_pca
+```
+
+
+# Creating combined PCA plot
+
+```{r}
+all_hemo_all_RR_pca <- (All_hemolymph_pca / All_RR_pca)+ 
+  plot_annotation(tag_levels = 'A')
+all_hemo_all_RR_pca
+```
+
+
+
+
+## Distance Based Redundancy Analysis plot 
+
+
+# Loading functions
+
+```{r}
+#' Create Base Ordination Plot from dbRDA Results
+#' 
+#' @description
+#' Creates a base ggplot object for ordination visualization from dbRDA results.
+#' This function handles the basic plot setup including axes, colors, and captions.
+#' 
+#' @param res A dbRDA result object from run_dbrda()
+#' @param variable Variable name for grouping/coloring (default: NULL, auto-detected)
+#' @param meta Metadata dataframe (default: NULL, extracted from res)
+#' @param legend_lab Custom legend label (default: NULL, uses capitalized variable name)
+#' @param limits Axis limits for plot (default: 2)
+#' @param xval X-axis variable name (default: "dbRDA1")
+#' @param yval Y-axis variable name (default: "dbRDA2")
+#' @param colpal Color palette for groups (default: NULL, uses spectral palette)
+#' @param spplabel Species label (default: NULL, extracted from res)
+#' @param choices Ordination axes to use (default: c(1:3))
+#' @param addperm Whether to add PERMANOVA results to caption (default: FALSE)
+#' 
+#' @return A ggplot object with base ordination plot
+#' 
+#' @examples
+#' \dontrun{
+#' dbr <- run_dbrda(ps_obj, "Variable1")
+#' p <- get_base_plot(dbr)
+#' layers <- get_layers_plot(dbr)
+#' }
+get_base_plot <- function(res,
+                          variable = NULL,
+                          meta = NULL,
+                          legend_lab = NULL,
+                          limits = 2,
+                          xval = NULL,
+                          yval = NULL,
+                          colpal = NULL,
+                          spplabel = NULL,
+                          choices = c(1:3),
+                          addperm = F) {
+  if (is.null(meta)) {
+    meta <- res %>%
+      get_meta()
+  }
+  if (is.null(variable)) {
+    variable <- res %>% 
+      get_variable()
+  }
+  if (is.null(spplabel)) {
+    spplabel <- res %>%
+      pluck("spplabel")
+  }
+  dat <- res %>%
+    scores(tidy = TRUE, scaling = "species", choices = choices) %>%
+    left_join(meta %>% as_tibble(rownames = "label"), by = join_by(label))
+  if (is.null(colpal)) {
+    message("Automatically choosing color palette as one was not provided.")
+    colpal <- colorspace::divergingx_hcl(
+      n = meta %>%
+        pluck(variable) %>%
+        as.factor() %>%
+        nlevels(),
+      palette = "Spectral",
+      rev = TRUE
+    )
+  }
+  if (is.null(legend_lab)) {
+    legend_lab <- str_to_title(variable)
+  }
+  if (is.null(xval)) {
+    xval <- dat %>% colnames() %>% pluck(1)
+  }
+  if (is.null(yval)) {
+    yval <- dat %>% colnames() %>% pluck(2)
+  }
+  base <- dat %>%
+    filter(score == "sites") %>%
+    ggplot(aes(x = !!as.name(xval),
+               y = !!as.name(yval), 
+               fill = !!as.name(variable))) +
+    xlab(paste0(xval, " [", get_axis_label(res, xval), "%]")) +
+    ylab(paste0(yval, " [", get_axis_label(res, yval), "%]")) +
+    theme_minimal() +
+    scale_fill_manual(values = colpal, 
+                      name = legend_lab,
+                      na.value = "gray") +
+    scale_color_manual(values = colpal %>% get_text_color(),
+                       name = legend_lab) +
+    coord_fixed(expand = T,
+                xlim = c(limits * -1, limits),
+                ylim = c(limits * -1, limits)) +
+    labs(caption = paste(
+      paste0("Constraint: ",  
+             res %>%  
+               pluck('terms') %>% 
+               format()
+            ), 
+      paste0("Samples n: ",
+             res %>% pluck('otu.dat') %>% dim() %>% pluck(1)
+            ), 
+      paste0(spplabel, " n: ",
+             res %>% pluck('otu.dat') %>% dim() %>% pluck(2)
+            ), 
+      paste0("Method: ", res %>% get_method_label()),
+      paste0("Inertia: ", res %>% pluck("inertia")),
+      sep = "; "
+      ) %>%
+        if_else(addperm, paste(., 
+                               res$permtxt %>%
+                                 str_replace_all(coll("R^(2)"), 
+                                                 "*r*<sup>2</sup>"),
+                               sep = "<br>"), .)
+      ) +
+    theme(plot.caption.position = "plot",
+          plot.caption = ggtext::element_markdown(size = rel(0.6)))
+  invisible(base)
+}
+#' Create Layers for Ordination Plot
+#' 
+#' @description
+#' Creates a list of ggplot2 layers for ordination visualization, including species vectors,
+#' site points, centroids, and labels. This function is designed to be used after get_base_plot().
+#' 
+#' @param res A dbRDA result object from run_dbrda()
+#' @param meta Metadata dataframe (default: NULL, extracted from res)
+#' @param variable Variable name for grouping (default: NULL, auto-detected)
+#' @param xval X-axis variable name (default: "dbRDA1")
+#' @param yval Y-axis variable name (default: "dbRDA2")
+#' @param choices Ordination axes to use (default: c(1:3))
+#' @param shape Optional variable name for point shapes (default: NULL)
+#' @param shapes Vector of shape values to use (default: c(21, 22, 24, 25))
+#' 
+#' @return A list of ggplot2 layers including:
+#'   - taxvec: All species vectors
+#'   - taxvectop: Top contributing species vectors
+#'   - sites: Sample points
+#'   - scale: Shape scale for points
+#'   - guides: Legend guides
+#'   - taxveclabs: Species vector labels
+#'   - centroidslab: Group centroid labels
+#'   - centroids: Group centroid points
+#' 
+#' @examples
+#' \dontrun{
+#' dbr <- run_dbrda(ps_obj, "Variable1")
+#' p <- get_base_plot(dbr)
+#' layers <- get_layers_plot(dbr)
+#' p + layers$sites + layers$centroids + layers$centroidslab
+#' }
+get_layers_plot <- function(res,
+                            meta = NULL,
+                            variable = NULL,
+                            xval = NULL,
+                            yval = NULL,
+                            choices = c(1:3),
+                            shape = NULL,
+                            shapes = c(21, 22, 24, 25)
+                            ) {
+  if (is.null(meta)) {
+    meta <- res %>%
+      get_meta()
+  }
+  if (is.null(variable)) {
+    variable <- res %>% 
+      get_variable()
+  }
+  dat <- res %>%
+    scores(tidy = TRUE, scaling = "species", choices = choices) %>%
+    left_join(meta %>% as_tibble(rownames = "label"), by = join_by(label))
+  if (is.null(xval)) {
+    xval <- dat %>% colnames() %>% pluck(1)
+  }
+  if (is.null(yval)) {
+    yval <- dat %>% colnames() %>% pluck(2)
+  }
+  dat.centroid <- dat %>%
+      filter(score == "centroids" & label %>% str_starts(variable)) %>%
+      mutate(label = str_remove(label, variable),
+             !!variable := factor(label,
+                                  levels = meta %>%
+                                    pluck(variable) %>%
+                                    as.factor() %>%
+                                    levels()))
+  tax_vec_length <- microViz:::computeAutoVecLength(
+    dat %>%
+      dplyr::filter(score == "species") %>%
+      dplyr::select(!!as.name(xval), !!as.name(yval)),
+    dat %>%
+      dplyr::filter(score == "sites") %>%
+      dplyr::select(!!as.name(xval), !!as.name(yval)),
+    prop = 0.85
+  )
+  dat.taxvec <- dat %>% 
+    dplyr::filter(score == "species") %>% 
+    dplyr::select(label, !!as.name(xval), !!as.name(yval)) %>% 
+    mutate(across(c(!!as.name(xval), !!as.name(yval)), ~ .x * tax_vec_length))
+  species.table <- dat.taxvec %>%
+    mutate(dist = abs(!!as.name(xval)) + abs(!!as.name(yval))) %>% 
+    arrange(desc(dist)) %>%
+    left_join(
+      res$otu.dat %>% 
+        colSums() %>% 
+        as_tibble(rownames = "label") %>% 
+        dplyr::rename(total = "value"),
+      by = join_by("label")
+    )
+  dat.taxvectop <- bind_rows(
+    species.table %>% slice_max(!!as.name(xval), n = 3),
+    species.table %>% slice_min(!!as.name(xval), n = 3),
+    species.table %>% slice_max(!!as.name(yval), n = 3),
+    species.table %>% slice_min(!!as.name(yval), n = 3),
+    species.table %>% slice_max(dist, n = 15)) %>% 
+    unique()
+  layers <- list(
+    taxvec = geom_segment(
+      aes(x = 0,
+          y = 0, 
+          xend = !!as.name(xval), 
+          yend = !!as.name(yval)),
+      linewidth = 0.5, 
+      arrow = NULL, 
+      alpha = 0.15, 
+      inherit.aes = FALSE,
+      data = dat.taxvec
+    ),
+    taxvectop = geom_segment(
+      aes(x = 0, 
+          y = 0, 
+          xend = !!as.name(xval), 
+          yend = !!as.name(yval)),
+      linewidth = 0.5,
+      arrow = NULL,
+      alpha = 1,
+      inherit.aes = FALSE,
+      data = dat.taxvectop
+    ),
+    sites = ifelse(is.null(shape),
+      c(geom_point(shape = 21)),
+      c(geom_point(aes(shape = !!as.name(shape))))
+    ),
+    scale = scale_shape_manual(values = shapes),
+    guides = guides(fill = guide_legend(override.aes = list(shape = 21))),
+    taxveclabs = geom_label(
+      aes(x = !!as.name(xval)*1.2, 
+          y = !!as.name(yval)*1.1,
+          label = label), 
+      size = 2,
+      alpha = 0.85,
+      inherit.aes = FALSE,
+      data = dat.taxvectop
+    ),
+    centroidslab = ggrepel::geom_label_repel(
+      aes(label = label,
+          color = !!as.name(variable)),
+      data = dat.centroid,
+      show.legend = F,
+      force = 3,
+      max.overlaps = 25,
+      alpha = 0.90,
+      size = 3),
+    centroids = geom_point(
+      shape = 23, 
+      data = dat.centroid,
+      alpha = 0.90,
+      size = 3)
+  )
+}
+```
+
+
+# Functions for dbrda
+
+```{r functions}
+#!/usr/bin/env Rscript
+# functions.R
+#' Run Distance-Based Redundancy Analysis (dbRDA)
+#' 
+#' @description
+#' Performs distance-based redundancy analysis on phyloseq objects
+#' The purpose of this function is to use the same data for the PERMANOVA test
+#' as for the ordination plot. Use get_base_plot() and get_layers_plot() after
+#' to generate the ordination plots.
+#' 
+#' @param ps A phyloseq object
+#' @param rhs Right-hand side of the formula for the analysis
+#' @param distmethod Distance method to use (default: "jaccard")
+#' @param trans Transformation method (default: "pa")
+#' @param binary Whether to use binary distances (default: TRUE)
+#' @param otusqrt Whether to square root transform OTU data (default: TRUE)
+#' @param distsqrt Whether to square root transform distances (default: FALSE)
+#' @param permanova Whether to perform PERMANOVA test (default: TRUE)
+#' @param by Method for PERMANOVA test (default: "terms") choose from
+#' 
+#' @return A list containing dbRDA results and additional analysis components
+#' 
+#' @examples
+#' \dontrun{
+#' result <- run_dbrda(ps_obj, "Variable1 + Variable2")
+#' }
+
+
+
+
+run_dbrda <- function(ps,
+                      rhs,
+                      distmethod = "jaccard", # modify as jaccard for presence/absence or bray for abundance
+                      trans = "pa", # modify as pa for presence/absence or compositional for abundance
+                      binary = TRUE,
+                      otusqrt = TRUE,
+                      distsqrt = FALSE,
+                      permanova = TRUE,
+                      by = "terms") {
+  stopifnot(is(ps, "phyloseq"))
+  otu.dat <- ps %>%
+    microbiome::transform(transform = trans) %>%
+    otu_get()
+  if (otusqrt) {
+    otu.dat <- otu.dat %>%
+      sqrt()
+  }
+  meta <- ps %>%
+    sample_data() %>%
+    data.frame()
+  distmat <- otu.dat %>%
+    vegdist(distmethod, binary = binary)
+  spplabel <- ps %>%
+    get_species_label()
+  res <- do.call(dbrda,
+          list(formula = as.formula(str_glue("distmat ~ {rhs}")),
+               data = meta,
+               sqrt.dist = distsqrt)) %>%
+    add_releig()
+  res$spplabel <- spplabel
+  if (otusqrt) {
+    sppscores(res) <- sqrt(otu.dat/2)
+  } else {
+    sppscores(res) <- otu.dat
+  }
+  if (permanova) {
+    res$perm <- do.call(
+      anova.cca,
+      list(object = res,
+           distance = distmethod,
+           sqrt.dist = distsqrt,
+           by = by))
+    res$disp <- res %>% 
+      pluck("terminfo", "terms") %>% 
+      labels() %>%
+      discard(function(x) str_detect(x, ":")) %>%
+      data.frame(term = .) %>% 
+      rowwise() %>%
+      mutate(groups = list(meta %>% pull(as.name(term)))) %>%
+      mutate(disperres = list(betadisper(distmat, groups))) %>%
+      mutate(permuteres = list(permutest(disperres))) %>%
+      mutate(tab = permuteres %>% 
+               pluck("tab") %>% 
+               as_tibble(rownames = "group") %>% 
+               list()
+             ) %>%
+      dplyr::select(term, tab) %>%
+      unnest(tab) %>%
+      dplyr::filter(group == "Groups") %>%
+      dplyr::select(-c(group, N.Perm)) %>%
+      magrittr::set_colnames(c("term", "df", "sumsq", "meansq", "statistic", "p.value"))
+    res$permres <- res$perm %>%
+      dplyr::rename(`Sum Sq` = "SumOfSqs") %>%
+      broom::tidy() %>%
+      add_row(term = "Total", df = nobs(res) - 1, sumsq = res$tot.chi) %>%
+      rowwise() %>%
+      dplyr::mutate("R2" = sumsq/res$tot.chi, .before = statistic) %>%
+      ungroup()
+    res$permtxt <- res$permres %>%
+      dplyr::filter(!term %in% c("Residual", "Total")) %>% 
+      nest_by(term, .key = "perm") %>%
+      left_join(res$disp %>% nest_by(term, .key = "disp"), by = join_by(term)) %>%
+      # rowwise(term)  %>%
+      # mutate(txt = str_glue("{term} R^(2) = {format(perm$R2, digits = 2)}, p = {perm$p.value}, dispersion p = {disp$p.value}")) %>%
+      mutate(txt = ifelse(
+        !is.null(disp),
+               str_glue("{term} R^(2) = {format(perm$R2, digits = 2)}, p = {perm$p.value}, dispersion p = {disp$p.value}"),
+               str_glue("{term} R^(2) = {format(perm$R2, digits = 2)}, p = {perm$p.value}, dispersion p = NA")
+               )
+        ) %>%
+      pull(txt) %>%
+      imap(function(x, idx) if_else(idx%%2 == 0, paste0(x, "<br>", recycle0 = FALSE), x)) %>%
+      paste(collapse = "; ") %>%
+      str_replace_all("<br>; ", "<br>") %>%
+      str_remove("<br>$")
+  }
+  res$otu.dat <- otu.dat
+  invisible(res)
+}
+get_text_color <- function(colpal) {
+  library(colorspace)
+  text_col <- if_else(contrast_ratio(colpal, "lightgray") > contrast_ratio("black", colpal),
+                      "lightgray",
+                      "black") %>%
+    set_names(names(colpal))
+  invisible(text_col)
+}
+get_meta <- function(res) {
+  res %>%
+    getCall() %>%
+    rlang::call_args() %>%
+    pluck("data")
+}
+get_variable <- function(res) {
+  res %>%
+    terms() %>%
+    labels() %>%
+    pluck(1)
+}
+add_releig <- function(res) {
+  res$CCA$releig <- res$CCA$eig/res$tot.chi*100
+  res$CA$releig <- res$CA$eig/res$tot.chi*100
+  invisible(res)
+}
+get_species_label <- function(ps) {
+  if (is(ps, "psExtra")) {
+    ps %>% info_get() %>% pluck("tax_agg")
+  } else {
+    "Species"
+  }
+}
+get_axis_label <- function(res, val) {
+  ifelse(str_detect(val %>% tolower(),
+                    res %>% pluck("method")),
+          res %>% pluck(6, "releig", val),
+          res %>% pluck(7, "releig", val)) %>%
+    format(digits = 3)
+}
+get_method_label <- function(res) {
+  case_match(
+    res %>% pluck("method"),
+    c("dbrda") ~ "dbRDA",
+    .default = res %>% pluck("method")
+  )
+}
+#' Create Base Ordination Plot from dbRDA Results
+#' 
+#' @description
+#' Creates a base ggplot object for ordination visualization from dbRDA results.
+#' This function handles the basic plot setup including axes, colors, and captions.
+#' 
+#' @param res A dbRDA result object from run_dbrda()
+#' @param variable Variable name for grouping/coloring (default: NULL, auto-detected)
+#' @param meta Metadata dataframe (default: NULL, extracted from res)
+#' @param legend_lab Custom legend label (default: NULL, uses capitalized variable name)
+#' @param limits Axis limits for plot (default: 2)
+#' @param xval X-axis variable name (default: "dbRDA1")
+#' @param yval Y-axis variable name (default: "dbRDA2")
+#' @param colpal Color palette for groups (default: NULL, uses spectral palette)
+#' @param spplabel Species label (default: NULL, extracted from res)
+#' @param choices Ordination axes to use (default: c(1:3))
+#' @param addperm Whether to add PERMANOVA results to caption (default: FALSE)
+#' 
+#' @return A ggplot object with base ordination plot
+#' 
+#' @examples
+#' \dontrun{
+#' dbr <- run_dbrda(ps_obj, "Variable1")
+#' p <- get_base_plot(dbr)
+#' layers <- get_layers_plot(dbr)
+#' }
+get_base_plot <- function(res,
+                          variable = NULL,
+                          meta = NULL,
+                          legend_lab = NULL,
+                          limits = 3,
+                          xval = "dbRDA1",
+                          yval = "dbRDA2",
+                          colpal = NULL,
+                          spplabel = NULL,
+                          choices = c(1:3),
+                          addperm = F) {
+  if (is.null(meta)) {
+    meta <- res %>%
+      get_meta()
+  }
+  if (is.null(variable)) {
+    variable <- res %>% 
+      get_variable()
+  }
+  if (is.null(spplabel)) {
+    spplabel <- res %>%
+      pluck("spplabel")
+  }
+  dat <- res %>%
+    scores(tidy = TRUE, scaling = "species", choices = choices) %>%
+    left_join(meta %>% as_tibble(rownames = "label"), by = join_by(label))
+  if (is.null(colpal)) {
+    message("Automatically choosing color palette as one was not provided.")
+    colpal <- colorspace::divergingx_hcl(
+      n = meta %>%
+        pluck(variable) %>%
+        as.factor() %>%
+        nlevels(),
+      palette = "Spectral",
+      rev = TRUE
+    )
+  }
+  if (is.null(legend_lab)) {
+    legend_lab <- str_to_title(variable)
+  }
+  spp_names <- 
+  base <- dat %>%
+    filter(score == "sites") %>%
+    ggplot(aes(x = !!as.name(xval),
+               y = !!as.name(yval), 
+               fill = !!as.name(variable))) +
+    xlab(paste0(xval, " [", get_axis_label(res, xval), "%]")) +
+    ylab(paste0(yval, " [", get_axis_label(res, yval), "%]")) +
+    theme_minimal() +
+    scale_fill_manual(values = colpal, 
+                      name = legend_lab,
+                      na.value = "gray") +
+    scale_color_manual(values = colpal %>% get_text_color(),
+                       name = legend_lab) +
+    coord_fixed(expand = T,
+                xlim = c(limits * -1, limits),
+                ylim = c(limits * -1, limits)) +
+    labs(caption = paste(
+      paste0("Constraint: ",  
+             res %>%  
+               pluck('terms') %>% 
+               format()
+            ), 
+      paste0("Samples n: ",
+             res %>% pluck('otu.dat') %>% dim() %>% pluck(1)
+            ), 
+      paste0(spplabel, " n: ",
+             res %>% pluck('otu.dat') %>% dim() %>% pluck(2)
+            ), 
+      paste0("Method: ", res %>% get_method_label()),
+      paste0("Inertia: ", res %>% pluck("inertia")),
+      sep = "; "
+      ) %>%
+        if_else(addperm, paste(., 
+                               res$permtxt %>%
+                                 str_replace_all(coll("R^(2)"), 
+                                                 "*r*<sup>2</sup>"),
+                               sep = "<br>"), .)
+      ) +
+    theme(plot.caption.position = "plot",
+          plot.caption = ggtext::element_markdown(size = rel(0.6)))
+  invisible(base)
+}
+```
+
+
+# Running dbRDA on fixed-genotype hemolymph samples
+
+```{r}
+library(vegan)
+library(stringr)
+  library(purrr)
+  library(base)
+  library(data.table)
+  library(dplyr)
+library(rstanarm)
+library(tidyverse)
+library(parsnip)
+library(ggrepel)
+
+# Presence/absence
+
+dbrda.jaccard.comp.nested <- ps %>%
+  ps_filter(Type == "Hemolymph", # modify to examine other groups (e.g. water samples)
+            PTC2 == "Fixed") %>%
+  tax_agg(rank = "Genus") %>%
+  tax_transform("pa") %>% # modify as pa for presence/absence or compositional for abundance
+  run_dbrda(
+    "Genotype/Line", # Modify to include only "Genotype" when examining 15RS and water samples, and include only "Type" when examining both hemolymph and water samples
+    distmethod = "jaccard", # modify as jaccard for presence/absence or bray for abundance
+    trans = "identity", # modify as hellinger for presence/absence or identity for abundance
+    binary = FALSE
+  )
+
+# Define custom colors for Genotype
+
+custom_colors <- c("RR" = "firebrick1",  # Red
+                   "SS" = "steelblue2")  # Blue
+
+dbrda.jaccard.comp.base.nested <- dbrda.jaccard.comp.nested %>%
+  get_base_plot("Genotype", addperm = TRUE, colpal = custom_colors)
+
+dbrda.jaccard.comp.layers.nested <- dbrda.jaccard.comp.nested %>%
+  get_layers_plot(variable = "Genotype")
+
+Fixed_hemo_dbrda_presence <- dbrda.jaccard.comp.base.nested + dbrda.jaccard.comp.layers.nested
+Fixed_hemo_dbrda_presence
+```
+
+
+# Observe PERMANOVA output
+
+```{r}
+(anova(dbrda.jaccard.comp.nested, by = "terms", permutations = 999))
+# R2 values are displayed on the plot
+# Dispersion values are displayed on the plot
+```
+
+```{r}
+# Abundance
+
+dbrda.bray.comp.nested <- ps %>%
+  ps_filter(Type == "Hemolymph",
+            PTC2 == "Fixed") %>%
+  tax_agg(rank = "Genus") %>%
+  tax_transform("compositional") %>% # modify as pa for presence/absence or compositional for abundance
+  run_dbrda(
+    "Genotype/Line",
+    distmethod = "bray", # modify as jaccard for presence/absence or bray for abundance
+    trans = "identity",
+    binary = FALSE
+  )
+
+# Define custom colors for Genotype
+
+custom_colors <- c("RR" = "firebrick1",  # Red
+                   "SS" = "steelblue2")  # Blue
+
+dbrda.bray.comp.base.nested <- dbrda.bray.comp.nested %>%
+  get_base_plot("Genotype", addperm = TRUE, colpal = custom_colors)
+
+dbrda.bray.comp.layers.nested <- dbrda.bray.comp.nested %>%
+  get_layers_plot(variable = "Genotype")
+
+Fixed_hemo_dbrda_abundance <- dbrda.bray.comp.base.nested + dbrda.bray.comp.layers.nested
+Fixed_hemo_dbrda_abundance
+```
+
+# Observe PERMANOVA output
+
+```{r}
+(anova(dbrda.bray.comp.nested, by = "terms", permutations = 999))
+# R2 values are displayed on the plot
+# Dispersion values are displayed on the plot
+```
+
+# All other PERMANOVA and dispersion test values were obtained by modifying the dbRDA code above to focus on the different groups, including 15RS segregating-genotype samples, water samples, and both hemolymph and water samples together using ps_filter. 
+
+
+
+
+# Differential abundance analysis plots
+
+
+# Load packages
+
+```{r}
+library(ggplot2)
+library(tidyverse)
+library(vegan)
+library(phyloseq)
+library(microViz)
+library(rstatix)
+library(lme4)
+library(lmerTest)
+library(rstanarm)
+library(parsnip)
+library(poissonreg)
+library(multilevelmod)
+library(furrr)
+library(ggvegan)
+library(emmeans)
+library(rstan)
+library(microbiome)
+``` 
+
+
+# Prepare file
+
+```{r}
+dat.da <- ps %>%
+  ps_mutate(total = sample_sums(ps)) %>%
+  ps_filter(Type == "Hemolymph") %>%
+  tax_agg("Genus") %>%
+  ps_melt() %>%
+  rename(Taxon = "OTU")
+View(dat.da) 
+
+ps %>% otu_get() %>% data.frame() %>% as_tibble(rownames = "Sample") %>% select(1:10)
+dat.da %>% pull(Abundance)
+
+head(sort(dat.da$Abundance, decreasing = TRUE), 10)
+```
+
+# Set up bayesian model function
+
+```{r}
+run_bayes_fit <- function(df){
+  prior_int <- normal(1, 1)
+  prior_dist <- normal(0, 1)
+  bayes_mod <- linear_reg() %>%
+    set_engine("stan_glmer", # Use stan_glm when creating water file as it contains only fixed effects
+               family=neg_binomial_2(link="log"),
+               prior_intercept=prior_int,
+               prior=prior_dist)
+  bayes_mod %>%
+  fit(Abundance ~ Genotype + (1 | Line), # Remove (1 | Line) when creating water file
+      data=df,
+      offset=log(total),
+      seed=12345,
+      cores=6,
+      chains=4,
+      iter=4000,
+      sparse=TRUE)
+}
+
+dat.da.bayes <- dat.da %>%
+  nest(data = -Taxon) %>%
+  mutate(fit = map(data, possibly(run_bayes_fit, otherwise = NA, quiet = FALSE)))
+
+dat.da.bayes <- readRDS("#/dat.da.bayes")
+```
+
+```{r}
+coefs.new <- dat.da.bayes$fit[[1]]$fit$coefficients %>%
+  names()
+coefs.new
+```
+
+```{r}
+dat.da.bayes.tab <- dat.da.bayes %>%
+  mutate(tidied = map(fit, ~ .x$fit %>%
+                        posterior_interval(prob=0.95,
+                                           pars=coefs.new[2]) %>%
+                        as_tibble(rownames = "term"))) %>%
+  unnest(tidied)
+keeps <- dat.da.bayes.tab %>% filter(`2.5%` < 0 & `97.5%` < 0)
+keeps <- rbind(keeps, dat.da.bayes.tab %>% filter(`2.5%` > 0 & `97.5%` > 0))
+keeps %>%
+  select(-c(data, fit))
+```
+
+# Getting emmeans to help interpret results
+
+```{r}
+library(emmeans)
+
+run_emmeans <- function(df){
+  emmeans(df$fit, ~ Genotype) %>%
+    contrast(method="pairwise") %>%
+    broom::tidy()
+}
+run_emmeans_res <- function(df){
+  emmeans(df$fit, ~ Genotype, type = "response") %>%
+    broom::tidy()
+}
+
+dat.da.bayes.emmeans <- dat.da.bayes %>%
+  mutate(emmeans = map(fit, possibly(run_emmeans, otherwise = NA)))
+
+dat.da.bayes.res.tab <- dat.da.bayes %>%
+  mutate(res = map(fit, possibly(run_emmeans_res, otherwise = NA))) %>%
+  unnest(res) %>%
+  select(-c(data, fit))
+
+sig.tab.bayes <- dat.da.bayes.emmeans %>%
+  unnest(emmeans) %>%
+  select(-c(data, fit)) %>%
+  ungroup() %>%
+  filter((lower.HPD < 0 & upper.HPD < 0) | (lower.HPD > 0 & upper.HPD > 0))
+```
+
+# Create differential abundance analysis plot
+
+```{r}
+sig.tab.bayes.p.fixed.hemo <- sig.tab.bayes %>%
+  mutate(ref.lvl = "SS") %>%
+  left_join(dat.da.bayes.res.tab %>%
+              rename(ref.lvl = "Genotype") %>%
+              select(Taxon, ref.lvl, prob)) %>%
+  mutate(Taxon = fct_reorder(Taxon, prob, .desc = FALSE)) %>%
+  arrange(Taxon) %>%
+  rename(ref.median = "prob") %>%
+  ggpubr::ggdotchart(x = "Taxon",
+                     y = "estimate",
+                     color = "contrast",
+                     size = "ref.median",
+                     rotate = TRUE,
+                     sorting = "none",
+                     palette = ggsci::pal_rickandmorty()(4)[2:4],
+                     ggtheme = theme_bw()) +
+  scale_size_continuous(trans = "log10") +
+  geom_errorbar(aes(ymin = lower.HPD, ymax = upper.HPD, color = contrast),
+                position = position_dodge(1.25))
+sig.tab.bayes.p.fixed.hemo
+```
+
+
+# Differential presence analysis plot
+
+```{r} 
+# examine results
+dat.da.binary.bayes.logit <- readRDS("#/dat.da.binary.bayes.logit.rds")
+
+coefs.new.binary <- dat.da.binary.bayes.logit$fit[[1]]$fit$coefficients %>%
+  names()
+coefs.new.binary
+```
+
+```{r}
+dat.da.bayes.tab.binary <- dat.da.binary.bayes.logit %>%
+  mutate(tidied = map(fit, ~ .x$fit %>%
+                        posterior_interval(prob=0.95,
+                                           pars=coefs.new.binary[1:2]) %>%
+                        as_tibble(rownames = "term"))) %>%
+  unnest(tidied)
+keeps.binary <- dat.da.bayes.tab.binary %>%
+  filter(term == "(Intercept)" & ((`2.5%` > 0 & `97.5%` > 0) | (`2.5%` < 0 & `97.5%` < 0))) %>%
+  select(Taxon)
+dat.da.bayes.tab.binary %>%
+  filter(term != "(Intercept)") %>%
+  filter((`2.5%` < 0 & `97.5%` <0) | (`2.5%` > 0 & `97.5%` > 0)) %>%
+  inner_join(keeps.binary) %>%
+  select(-c(data, fit))
+```
+
+```{r}
+# Getting emmeans to help interpret results
+library(emmeans)
+
+run_emmeans_response <- function(df){
+  emmeans(df$fit, ~ Genotype, type = "response") %>%
+    contrast(method="pairwise", type = "response") %>%
+    broom::tidy()
+}
+
+dat.da.bayes.emmeans.binary.logit_response <- 
+  dat.da.binary.bayes.logit %>%
+  mutate(emmeans = map(fit, possibly(run_emmeans_response, otherwise = NA)))
+
+sig.tab.bayes.binary.logit_response <- 
+  dat.da.bayes.emmeans.binary.logit_response %>%
+  unnest(emmeans) %>%
+  select(-c(data, fit)) %>%
+  ungroup() %>%
+  filter((lower.HPD < 1 & upper.HPD < 1) | (lower.HPD > 1 & upper.HPD > 1))
+
+# Filters taxa that have OR that don't overlap with 1, implying statistical significance
+```
+
+```{r}
+run_emmeans_res <- function(df){
+  emmeans(df$fit, ~ Genotype, type = "response", method = "pairwise") %>%
+    broom::tidy()
+}
+
+dat.da.bayes.res.tab.binary.logit <- dat.da.binary.bayes.logit %>%
+  mutate(emmeans_res = map(fit, possibly(run_emmeans_res, otherwise = NA))) %>%
+  unnest(emmeans_res) %>%
+  select(-c(data, fit))
+
+# Filter for taxa that are significantly different from 0.5 in RR genotype
+sig.tab.bayes.binary.logit_response.new <- dat.da.bayes.res.tab.binary.logit %>% 
+  pivot_wider(id_cols = Taxon, names_from=Genotype, values_from = c(prob, lower.HPD, upper.HPD)) %>%
+  filter((lower.HPD_RR > 0.5 & upper.HPD_RR > 0.5) | (lower.HPD_RR < 0.5 & upper.HPD_RR < 0.5)) %>%
+  select(Taxon, prob_SS, prob_RR) %>%
+  inner_join(sig.tab.bayes.binary.logit_response)
+
+# Pivots data so that probabilities for SS and RR genotypes are stored in separate columns
+# Filters rows where HPD intervals for RR genotype do not overlap with 0.5
+# Joins significant taxa with the previously filtered dataframe "sig.tab.bayes.binary.logit_response"
+
+# Checking to make sure there are no taxa with more SS than RR with high SS probability
+dat.da.bayes.res.tab.binary.logit %>% 
+  pivot_wider(id_cols = Taxon, names_from=Genotype, values_from = c(prob, lower.HPD, upper.HPD)) %>% 
+  mutate(diff = prob_RR - prob_SS) %>% 
+  arrange(diff)
+
+# performs a check to ensure there are no taxa where SS has a higher probability than RR when SS is expected to be lower
+
+# Joining 
+
+sig.tab.bayes.binary.p.fixed.hemo <- sig.tab.bayes.binary.logit_response.new %>%
+  # mutate(Taxon = fct_reorder(Taxon, prob_SS, .desc = FALSE)) %>%
+  mutate(Order = if_else(lower.HPD > 1, abs(1-lower.HPD), abs(1-upper.HPD))) %>%
+  mutate(Taxon = fct_reorder(Taxon, Order)) %>%
+  arrange(Taxon) %>%
+  ggpubr::ggdotchart(x = "Taxon",
+                     y = "odds.ratio",
+                     color = "contrast",
+                     size = "prob_SS",
+                     rotate = TRUE,
+                     sorting = "none",
+                     palette = ggsci::pal_rickandmorty()(4)[2:4],
+                     ggtheme = theme_bw()) +
+  scale_y_log10() +
+  geom_errorbar(aes(ymin = lower.HPD, ymax = upper.HPD, color = contrast),
+                position = position_dodge(1.25))
+sig.tab.bayes.binary.p.fixed.hemo
+```
+
+# Combining plots
+
+```{r}
+Differential_plots <- sig.tab.bayes.p.fixed.hemo + sig.tab.bayes.binary.p.fixed.hemo +
+  plot_annotation(tag_levels = 'A') & 
+  theme(plot.margin = margin(15, 15, 15, 15), width = 10, height = 12)
+Differential_plots
+```
+
+
+# Differential abundance in water samples
+
+```{r}
+# examine results
+dat.da.bayes.water <- readRDS("#/dat.da.bayes.water.rds")
+
+coefs.new.water <- dat.da.bayes.water$fit[[1]]$fit$coefficients %>%
+  names()
+
+coefs.new.water
+```
+
+```{r}
+dat.da.bayes.tab.water <- dat.da.bayes.water %>%
+  mutate(tidied = map(fit, ~ .x$fit %>%
+                        posterior_interval(prob=0.95,
+                                           pars=coefs.new.water[2]) %>%
+                        as_tibble(rownames = "term"))) %>%
+  unnest(tidied)
+keeps.water <- dat.da.bayes.tab.water %>% filter(`2.5%` < 0 & `97.5%` < 0)
+keeps.water <- rbind(keeps.water, dat.da.bayes.tab.water %>% filter(`2.5%` > 0 & `97.5%` > 0))
+keeps.water %>%
+  select(-c(data, fit))
+```
+
+```{r}
+# Getting emmeans to help interpret results
+library(emmeans)
+
+run_emmeans <- function(df){
+  emmeans(df$fit, ~ Genotype) %>%
+    contrast(method="pairwise") %>%
+    broom::tidy()
+}
+run_emmeans_res <- function(df){
+  emmeans(df$fit, ~ Genotype, type = "response") %>%
+    broom::tidy()
+}
+
+dat.da.bayes.emmeans.water <- dat.da.bayes.water %>%
+  mutate(emmeans = map(fit, possibly(run_emmeans, otherwise = NA)))
+
+dat.da.bayes.res.tab.water <- dat.da.bayes.water %>%
+  mutate(res = map(fit, possibly(run_emmeans_res, otherwise = NA))) %>%
+  unnest(res) %>%
+  select(-c(data, fit))
+
+sig.tab.bayes.water <- dat.da.bayes.emmeans.water %>%
+  unnest(emmeans) %>%
+  select(-c(data, fit)) %>%
+  ungroup() %>%
+  filter((lower.HPD < 0 & upper.HPD < 0) | (lower.HPD > 0 & upper.HPD > 0))
+
+sig.tab.bayes.p.water <- sig.tab.bayes.water %>%
+  mutate(ref.lvl = "SS") %>%
+  left_join(dat.da.bayes.res.tab.water %>%
+              rename(ref.lvl = "Genotype") %>%
+              select(Taxon, ref.lvl, prob)) %>%
+  mutate(Taxon = fct_reorder(Taxon, prob, .desc = FALSE)) %>%
+  arrange(Taxon) %>%
+  rename(ref.median = "prob") %>%
+  ggpubr::ggdotchart(x = "Taxon",
+                     y = "estimate",
+                     color = "contrast",
+                     size = "ref.median",
+                     rotate = TRUE,
+                     sorting = "none",
+                     palette = ggsci::pal_rickandmorty()(4)[2:4],
+                     ggtheme = theme_bw()) +
+  scale_size_continuous(trans = "log10") +
+  geom_errorbar(aes(ymin = lower.HPD, ymax = upper.HPD, color = contrast),
+                position = position_dodge(1.25))
+
+sig.tab.bayes.p.water
+```

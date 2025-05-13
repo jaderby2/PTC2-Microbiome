@@ -7,8 +7,8 @@ This repository contains all R code and workflows used to analyze and visualize 
 This project analyses the hemolymph and tank water microbiome of BS90 _Biomphalaria glabrata_ snails using 16S rDNA sequencing data. Data was processed in R following the DADA2 and microViz pipelines. Downstread analyses and figure generation was conducted in R. The goal of this project was to assess differences in microbial abundance and presence between resistant and susceptible inbred snail lines fixed at a genomic marker, the _PTC2_, that has additional roles in snail susceptibility to schistosome infection. 
 
 ## Contents
-* All data processing and filtering are documented in the "code/Sequence_processing.rmd" directory. 
-* All figures, tables, and data generated are documented in the "code/Figure_generation.rmd" directory. 
+* All data processing and filtering steps are documented in the "code/Data_processing.rmd" directory. 
+* All figures, tables, and data generated are documented in the "code/Data_visualization.rmd" directory. 
 
 ## Data
 Raw data files, processed phyloseq objects, data tables and figures are available at Zenodo: [INSERT DOI LINK]

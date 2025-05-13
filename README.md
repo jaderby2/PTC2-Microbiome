@@ -11,7 +11,7 @@ This project analyses the hemolymph and tank water microbiome of BS90 _Biomphala
 * All figures, tables, and data generated are documented in the "code/Data_visualization.rmd" directory. 
 
 ## Data
-Raw data files, processed phyloseq objects, data tables and figures are available at Zenodo: [INSERT DOI LINK]
+Raw data files, processed phyloseq objects, data tables and figures are available at Zenodo: (https://doi.org/10.5281/zenodo.15399659)
 
 ## License
 This project is released under the MIT License for code.

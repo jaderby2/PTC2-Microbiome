@@ -1,0 +1,243 @@
+---
+title: "Processing_code"
+author: "Jade Derby"
+date: "2025-04-14"
+output: html_document
+---
+
+# Load packages
+
+```{r}
+library("devtools")
+library("dada2")
+library(phyloseq)
+library(Biostrings)
+library(ggplot2)
+```
+
+
+
+## DADA2 pipeline
+
+
+# Getting started
+
+```{r}
+path <- "#/Raw_sequences"
+list.files(path)
+
+# Forward and reverse fastq filenames have format: SAMPLENAME_R1_001.fastq and SAMPLENAME_R2_001.fastq
+
+fnFs <- sort(list.files(path, pattern="_R1_001.fastq", full.names = TRUE))
+fnRs <- sort(list.files(path, pattern="_R2_001.fastq", full.names = TRUE))
+
+# Extract sample names, assuming filenames have format: SAMPLENAME_XXX.fastq
+sample.names <- sapply(strsplit(basename(fnFs), "_"), `[`, 1)
+```
+
+
+# Inspect read quality profiles
+
+```{r}
+# Forward reads:
+fnFsqualityprofile <- plotQualityProfile(fnFs[1:2])
+
+# Reverse reads:
+fnRsqualityprofile <- plotQualityProfile(fnRs[1:2])
+```
+
+
+
+## Filter and Trim
+
+
+# Assign the filenames for the filtered fastq.gz files
+
+```{r}
+# Place filtered files in filtered/ subdirectory
+filtFs <- file.path(path, "filtered", paste0(sample.names, "_F_filt.fastq.gz"))
+filtRs <- file.path(path, "filtered", paste0(sample.names, "_R_filt.fastq.gz"))
+names(filtFs) <- sample.names
+names(filtRs) <- sample.names
+```
+
+
+# The standard filtering parameters suggested by DADA2 were used, except the paired-end read truncLen was changed to c(240,200) based on quality profiles. 
+
+```{r}
+out <- filterAndTrim(fnFs, filtFs, fnRs, filtRs, truncLen=c(240,200),
+                     maxN=0, maxEE=c(2,2), truncQ=2, rm.phix=TRUE,
+                     compress=TRUE, multithread=FALSE) # On Windows set multithread=FALSE
+
+out <- readRDS("C:/microbiome/pub/data/out.rds")
+```
+
+
+# Error Rates
+
+```{r}
+errF <- learnErrors(filtFs, multithread=TRUE)
+errR <- learnErrors(filtRs, multithread=TRUE)
+plotErrors(errF, nominalQ=TRUE)
+```
+
+
+# Sample Inference
+
+```{r}
+dadaFs <- dada(filtFs, err=errF, multithread=TRUE)
+dadaRs <- dada(filtRs, err=errR, multithread=TRUE)
+dadaFs[[1]]
+```
+
+
+# Merge paired reads
+
+```{r}
+mergers <- mergePairs(dadaFs, filtFs, dadaRs, filtRs, verbose=TRUE)
+head(mergers[[1]])
+```
+
+
+# Construct sequence table
+
+```{r}
+seqtab <- makeSequenceTable(mergers)
+rownames(seqtab) <- NULL
+dim(seqtab)
+
+# Inspect distribution of sequence lengths
+table(nchar(getSequences(seqtab)))
+```
+
+
+# Remove chimeras
+
+```{r}
+seqtab.nochim <- removeBimeraDenovo(seqtab, method="consensus", multithread=TRUE, verbose=TRUE)
+sum(seqtab.nochim)/sum(seqtab)
+```
+
+
+# Track reads through the pipeline
+
+```{r}
+getN <- function(x) sum(getUniques(x))
+track <- cbind(out, sapply(dadaFs, getN), sapply(dadaRs, getN), sapply(mergers, getN), rowSums(seqtab.nochim))
+colnames(track) <- c("input", "filtered", "denoisedF", "denoisedR", "merged", "nonchim")
+rownames(track) <- sample.names
+head(track)
+```
+
+
+
+## Assign taxonomy
+
+```{r}
+reference_file <- "#/silva_nr99_v138.1_train_set.fa"
+
+taxa <- assignTaxonomy(seqtab.nochim, reference_file, multithread=TRUE)
+taxa.print <- taxa # Removing sequence rownames for display only
+rownames(taxa.print) <- NULL
+head(taxa.print)
+```
+
+
+## Handoff to Phyloseq
+
+# load packages
+
+```{r}
+library(phyloseq); packageVersion("phyloseq")
+library(Biostrings); packageVersion("Biostrings")
+library(ggplot2); packageVersion("ggplot2")
+```
+
+
+# We now construct a phyloseq object directly from the dada2 outputs
+
+```{r}
+Metadata <- read.csv("#/Metadata.csv")
+
+ps <- phyloseq(otu_table(seqtab.nochim, taxa_are_rows=FALSE), sample_data(Metadata), 
+               tax_table(taxa))
+
+# Removing contaminated and duplicated data
+ps <- prune_samples(ps, Line != c("SS6", "RS11D"))
+# The "SS6" inbred line tank was found to be contaminated shortly following sample collection, therefore it was removed from the study. 
+# The "RS11D" inbred line tank was a duplicate of the "RS11" tank. 
+
+dna <- Biostrings::DNAStringSet(taxa_names(ps))
+names(dna) <- taxa_names(ps)
+ps <- merge_phyloseq(ps, dna)
+taxa_names(ps) <- paste0("ASV", seq(ntaxa(ps)))
+ps
+```
+
+
+
+## Handoff to microViz
+
+```{r}
+library(phyloseq)
+library(ggplot2)
+library(patchwork) # for combining multiple plots
+library(microViz)
+```
+
+
+# Explore the data
+
+```{r}
+ps <- readRDS("#/ps.rds")
+
+sample_names(ps)
+taxa_names(ps) %>% head()
+sample_variables(ps)
+samdat_tbl(ps) # retrieve sample_data as a tibble
+otu_get(ps, taxa = 1:3, samples = 1:5) # look at a tiny part of the otu_table
+rank_names(ps)
+tax_table(ps) %>% head(3)
+```
+
+
+# Filtering and cleaning data
+
+```{r}
+ps %>%
+  tax_fix(min_length = 0) %>%
+  tax_agg("Family") %>%
+  tax_table() %>%
+  .[1:8, 3:5] # removes the first 2 ranks and shows only first 8 rows for nice printing
+   
+##  Rows named: ASV2681 and ASV4745 contains no non-unknown values, therefore removing 
+  
+ps <- ps %>%
+  tax_fix(min_length = 0, suffix_rank = "current")
+  
+ps %>% tax_select(c("ASV2681", "ASV4745")) %>% tt_get()
+
+ps %>% tax_select(c("Bacteria", "Archaea")) %>% tt_get() %>% data.frame() %>%
+  dplyr::select(Family) %>% table()
+
+ps %>% tax_select(c("Mitochondria", "Chloroplast"), strict_matches = TRUE) %>% tt_get()
+
+ps <- ps %>% tax_select("Mitochondria", strict_matches = TRUE, deselect = TRUE) 
+
+ps <- ps %>% tax_filter(min_prevalence = 3)
+ps %>% sample_sums() %>% summary()
+```
+  
+
+# Creating new column with shortened sample IDs called "temp_sample_name". 
+
+```{r}
+ps <- ps %>% 
+  ps_mutate(temp_sample_name = temp_sample_name %>%
+    str_replace("6RR", "RR6") %>%
+    str_replace("16SS", "SS16") %>%
+    str_replace("20SS", "SS20") %>%
+    str_replace("2SS", "SS2") %>%
+    str_replace("11SS", "SS11")
+    )
+```

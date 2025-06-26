@@ -890,15 +890,15 @@ get_layers_plot <- function(res,
     ),
     scale = scale_shape_manual(values = shapes),
     guides = guides(fill = guide_legend(override.aes = list(shape = 21))),
-    taxveclabs = geom_label(
-      aes(x = !!as.name(xval)*1.2, 
-          y = !!as.name(yval)*1.1,
-          label = label), 
-      size = 2,
-      alpha = 0.85,
-      inherit.aes = FALSE,
-      data = dat.taxvectop
-    ),
+    	taxveclabs = geom_label(
+		  aes(x = !!as.name(xval)*1.2, 
+		      y = !!as.name(yval)*1.1,
+		      label = label), 
+		  size = 2,
+		  alpha = 0.85,
+		  inherit.aes = FALSE,
+		  data = dat.taxvectop
+),
     centroidslab = ggrepel::geom_label_repel(
       aes(label = label,
           color = !!as.name(variable)),
@@ -953,8 +953,8 @@ get_layers_plot <- function(res,
 
 run_dbrda <- function(ps,
                       rhs,
-                      distmethod = "jaccard", # modify as jaccard for presence/absence or bray for abundance
-                      trans = "pa", # modify as pa for presence/absence or compositional for abundance
+                      distmethod = "bray", # modify as jaccard for presence/absence or bray for abundance
+                      trans = "compositional", # modify as pa for presence/absence or compositional for abundance
                       binary = TRUE,
                       otusqrt = TRUE,
                       distsqrt = FALSE,
@@ -1211,7 +1211,10 @@ library(rstanarm)
 library(tidyverse)
 library(parsnip)
 library(ggrepel)
+```
 
+
+```{r}
 # Presence/absence
 
 dbrda.jaccard.comp.nested <- ps %>%
@@ -1435,7 +1438,9 @@ sig.tab.bayes.p.fixed.hemo <- sig.tab.bayes %>%
                      ggtheme = theme_bw()) +
   scale_size_continuous(trans = "log10") +
   geom_errorbar(aes(ymin = lower.HPD, ymax = upper.HPD, color = contrast),
-                position = position_dodge(1.25))
+                position = position_dodge(1.25)) +
+  theme(axis.text.y = element_text(size = 7, margin = margin(r = 5)))
+
 sig.tab.bayes.p.fixed.hemo
 ```
 
@@ -1539,16 +1544,19 @@ sig.tab.bayes.binary.p.fixed.hemo <- sig.tab.bayes.binary.logit_response.new %>%
                      ggtheme = theme_bw()) +
   scale_y_log10() +
   geom_errorbar(aes(ymin = lower.HPD, ymax = upper.HPD, color = contrast),
-                position = position_dodge(1.25))
+                position = position_dodge(1.25)) +
+  theme(axis.text.y = element_text(size = 7, margin = margin(r = 5)))
 sig.tab.bayes.binary.p.fixed.hemo
 ```
+
 
 # Combining plots
 
 ```{r}
-Differential_plots <- sig.tab.bayes.p.fixed.hemo + sig.tab.bayes.binary.p.fixed.hemo +
+library(patchwork)
+Differential_plots <- sig.tab.bayes.p.fixed.hemo | sig.tab.bayes.binary.p.fixed.hemo +
   plot_annotation(tag_levels = 'A') & 
-  theme(plot.margin = margin(15, 15, 15, 15), width = 10, height = 12)
+  theme(plot.margin = margin(15, 15, 15, 15))
 Differential_plots
 ```
 
